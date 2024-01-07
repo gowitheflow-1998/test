@@ -270,11 +270,14 @@ if __name__ == "__main__":
     pearson_results = []
     spearman_results = []
 
-    for model_language in ["de","nl","es","fr","it","pt","pl","ru","zh"]:
+    for model_language in ["en","de","nl","es","fr","it","pt","pl","ru","zh"]:
     # for model_language in ["de"]:
         model_pearson_results = []
         model_spearman_results = []
-        model_name = f"gowitheflowlab/en-{model_language}"
+        if model_language == "en":
+            model_name = "zxh4546/allnli_wikispan_unsup_ensemble_last"
+        else:
+            model_name = f"gowitheflowlab/en-{model_language}"
         for eval_language in ["en","de","nl","es","fr","it","pt","pl","ru","zh"]:
             eval_pearson_cosine, eval_spearman_cosine = sts_evaluation(model_name, eval_language)
             model_pearson_results.append(eval_pearson_cosine)
