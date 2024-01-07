@@ -19,6 +19,7 @@ import sys
 from dataclasses import dataclass, field
 from typing import Optional, Tuple, Union
 from tqdm import tqdm
+import pickle
 
 import numpy as np
 import torch
@@ -57,23 +58,6 @@ from transformers.utils.versions import require_version
 
 import datasets
 
-#### Just some code to print debug information to stdout
-logging.basicConfig(format='%(asctime)s - %(message)s',
-                    datefmt='%Y-%m-%d %H:%M:%S',
-                    level=logging.INFO,
-                    handlers=[LoggingHandler()])
-#### /print debug information to stdout
-
-#Check if dataset exsist. If not, download and extract  it
-nli_dataset_path = 'datasets/AllNLI.tsv.gz'
-sts_dataset_path = 'datasets/stsbenchmark.tsv.gz'
-
-if not os.path.exists(nli_dataset_path):
-    util.http_get('https://sbert.net/datasets/AllNLI.tsv.gz', nli_dataset_path)
-
-if not os.path.exists(sts_dataset_path):
-    util.http_get('https://sbert.net/datasets/stsbenchmark.tsv.gz', sts_dataset_path)
-
 check_min_version("4.17.0")
 
 require_version("datasets>=1.8.0", "To fix: pip install ./datasets")
@@ -85,91 +69,6 @@ datasets_keys = {
     "mteb": ('mteb/stsbenchmark-sts', "sentence1", "sentence2"),
     "multi-sts": ('stsb_multi_mt', "sentence1", "sentence2")
 }
-
-LANGUAGE = "en"
-DATASET_NAME = 'multi-sts'
-POOLING_MODE = "mean"
-FALLBACK_FONTS_DIR = "data/fallback_fonts"
-SEQ_LEN = 64
-BSZ = 16
-model_name = "zxh4546/allnli_wikispan_unsup_ensemble_last"
-# model_name = "2-allnli-**gowitheflow/unsup-ensemble-last-64-768-6**-64-128-3e-5-2600"
-
-this_dataset_name, sentence1_key, sentence2_key = datasets_keys[DATASET_NAME]
-
-print('Loading dataset')
-
-train_dataset = load_dataset(
-    this_dataset_name,
-    LANGUAGE,
-    split="test",
-    cache_dir=None,
-    use_auth_token=None,
-)
-
-try:
-    label_list = train_dataset.features["similarity_score"].names
-except AttributeError:
-    label_list = None
-
-# Labels
-num_labels = 0  # len(label_list) no need
-if label_list:
-    label_to_id = {v: i for i, v in enumerate(label_list)}
-else:  # for mnli
-    label_to_id = {'entailment': 0, 'neutral': 1, 'contradiction': 2}
-
-
-# model_name = "contrastive-unsup-pixel-base-mean-64-128-1-3e-5-2350-42"
-
-print(f'Building models for {model_name}')
-config_kwargs = {
-    "cache_dir": None,
-    "revision": "main",
-    "use_auth_token": None,
-}
-
-config = AutoConfig.from_pretrained(
-    model_name,
-    num_labels=num_labels,
-    finetuning_task=this_dataset_name,
-    attention_probs_dropout_prob=0.1,
-    hidden_dropout_prob=0.1,
-    **config_kwargs,
-)
-
-print(f'model type: {config.model_type}')
-
-model = PIXELForSequenceClassification.from_pretrained(
-    model_name,
-    config=config,
-    pooling_mode=PoolingMode.from_string(POOLING_MODE),
-    add_layer_norm=True,
-    **config_kwargs,
-)
-
-model.config.label2id = label_to_id
-model.config.id2label = {id: label for label, id in config.label2id.items()}
-
-modality = Modality.IMAGE
-renderer_cls = PangoCairoTextRenderer
-processor = renderer_cls.from_pretrained(
-    model_name,
-    cache_dir=None,
-    revision="main",
-    use_auth_token=None,
-    fallback_fonts_dir=FALLBACK_FONTS_DIR,
-    rgb=False,
-)
-
-processor.max_seq_length = SEQ_LEN
-resize_model_embeddings(model, processor.max_seq_length)
-
-transforms = get_transforms(
-    do_resize=True,
-    size=(processor.pixels_per_patch, processor.pixels_per_patch * processor.max_seq_length),
-)
-format_fn = glue_strip_spaces
 
 def image_preprocess_fn(examples):
 
@@ -197,14 +96,6 @@ def image_preprocess_fn(examples):
         examples["label"] = [l if l != -1 else -100 for l in examples["similarity_score"]]
     return examples
 
-preprocess_fn = image_preprocess_fn
-
-train_dataset.features["pixel_values"] = datasets.Image()
-train_dataset.set_transform(preprocess_fn)
-
-for index in random.sample(range(len(train_dataset)), 3):
-    print(f"Sample {index} of the training set: {train_dataset[index]}.")
-
 def image_collate_fn(examples):
 
     # two sentences for contrastive learning
@@ -227,58 +118,175 @@ def image_collate_fn(examples):
         'labels': labels
     }
 
-device = "cuda:0" if torch.cuda.is_available() else "cpu"
 
-model.to(device)
+def sts_evaluation(model_name, language):
+    LANGUAGE = language
+    DATASET_NAME = 'multi-sts'
+    POOLING_MODE = "mean"
+    FALLBACK_FONTS_DIR = "data/fallback_fonts"
+    SEQ_LEN = 64
+    BSZ = 16
+    # model_name = "Team-PIXEL/pixel-base"    
+    # 
+    # model_name = "zxh4546/allnli_wikispan_unsup_ensemble_last"
+    # model_name = "2-allnli-**gowitheflow/unsup-ensemble-last-64-768-6**-64-128-3e-5-2600"
 
-total_output_a = []
-total_output_b = []
+    this_dataset_name, sentence1_key, sentence2_key = datasets_keys[DATASET_NAME]
 
-model.eval()
-with torch.no_grad():
-    for step in tqdm(range(0, len(train_dataset), BSZ)):
-        inputs = [train_dataset[step + idx] for idx in range(0, min(BSZ, len(train_dataset)-step))]
-        inputs = image_collate_fn(inputs)
-        sentence1 = inputs.pop("sentence1")
-        sentence2 = inputs.pop("sentence2")
+    train_dataset = load_dataset(
+        this_dataset_name,
+        LANGUAGE,
+        split="test",
+        cache_dir=None,
+        use_auth_token=None,
+    )
 
-        sentence1 = {k: v.to(device) for k, v in sentence1.items()} 
-        sentence2 = {k: v.to(device) for k, v in sentence2.items()} 
+    try:
+        label_list = train_dataset.features["similarity_score"].names
+    except AttributeError:
+        label_list = None
 
-        outputs_a = model(**sentence1).logits
-        outputs_b = model(**sentence2).logits
+    # Labels
+    num_labels = 0  # len(label_list) no need
+    if label_list:
+        label_to_id = {v: i for i, v in enumerate(label_list)}
+    else:  # for mnli
+        label_to_id = {'entailment': 0, 'neutral': 1, 'contradiction': 2}
 
-        total_output_a.append(outputs_a.detach().cpu())
-        total_output_b.append(outputs_b.detach().cpu())
+
+    # model_name = "contrastive-unsup-pixel-base-mean-64-128-1-3e-5-2350-42"
+
+    print(f'Building models for {model_name}')
+    config_kwargs = {
+        "cache_dir": None,
+        "revision": "main",
+        "use_auth_token": None,
+    }
+
+    config = AutoConfig.from_pretrained(
+        model_name,
+        num_labels=num_labels,
+        finetuning_task=this_dataset_name,
+        attention_probs_dropout_prob=0.1,
+        hidden_dropout_prob=0.1,
+        **config_kwargs,
+    )
+
+    print(f'model type: {config.model_type}')
+
+    model = PIXELForSequenceClassification.from_pretrained(
+        model_name,
+        config=config,
+        pooling_mode=PoolingMode.from_string(POOLING_MODE),
+        add_layer_norm=True,
+        **config_kwargs,
+    )
+
+    model.config.label2id = label_to_id
+    model.config.id2label = {id: label for label, id in config.label2id.items()}
+
+    modality = Modality.IMAGE
+    renderer_cls = PangoCairoTextRenderer
+    processor = renderer_cls.from_pretrained(
+        model_name,
+        cache_dir=None,
+        revision="main",
+        use_auth_token=None,
+        fallback_fonts_dir=FALLBACK_FONTS_DIR,
+        rgb=False,
+    )
+
+    processor.max_seq_length = SEQ_LEN
+    resize_model_embeddings(model, processor.max_seq_length)
+
+    transforms = get_transforms(
+        do_resize=True,
+        size=(processor.pixels_per_patch, processor.pixels_per_patch * processor.max_seq_length),
+    )
+    format_fn = glue_strip_spaces
+
+    preprocess_fn = image_preprocess_fn
+
+    train_dataset.features["pixel_values"] = datasets.Image()
+    train_dataset.set_transform(preprocess_fn)
+
+    device = "cuda:0" if torch.cuda.is_available() else "cpu"
+
+    model.to(device)
+
+    total_output_a = []
+    total_output_b = []
+
+    model.eval()
+    with torch.no_grad():
+        for step in tqdm(range(0, len(train_dataset), BSZ)):
+            inputs = [train_dataset[step + idx] for idx in range(0, min(BSZ, len(train_dataset)-step))]
+            inputs = image_collate_fn(inputs)
+            sentence1 = inputs.pop("sentence1")
+            sentence2 = inputs.pop("sentence2")
+
+            sentence1 = {k: v.to(device) for k, v in sentence1.items()} 
+            sentence2 = {k: v.to(device) for k, v in sentence2.items()} 
+
+            outputs_a = model(**sentence1).logits
+            outputs_b = model(**sentence2).logits
+
+            total_output_a.append(outputs_a.detach().cpu())
+            total_output_b.append(outputs_b.detach().cpu())
 
 
-embeddings1  = torch.cat(total_output_a, dim=0)
-embeddings2 = torch.cat(total_output_b, dim=0)
-labels = [n['label'] for n in train_dataset]
+    embeddings1  = torch.cat(total_output_a, dim=0)
+    embeddings2 = torch.cat(total_output_b, dim=0)
+    # labels = [n['similarity_score'] for n in train_dataset]
 
-cosine_scores = 1 - (paired_cosine_distances(embeddings1, embeddings2))
-manhattan_distances = -paired_manhattan_distances(embeddings1, embeddings2)
-euclidean_distances = -paired_euclidean_distances(embeddings1, embeddings2)
-dot_products = [np.dot(emb1, emb2) for emb1, emb2 in zip(embeddings1, embeddings2)]
+    labels = [n['label'] for n in train_dataset]
 
-eval_pearson_cosine, _ = pearsonr(labels, cosine_scores)
-eval_spearman_cosine, _ = spearmanr(labels, cosine_scores)
+    cosine_scores = 1 - (paired_cosine_distances(embeddings1, embeddings2))
+    manhattan_distances = -paired_manhattan_distances(embeddings1, embeddings2)
+    euclidean_distances = -paired_euclidean_distances(embeddings1, embeddings2)
+    dot_products = [np.dot(emb1, emb2) for emb1, emb2 in zip(embeddings1, embeddings2)]
 
-eval_pearson_manhattan, _ = pearsonr(labels, manhattan_distances)
-eval_spearman_manhattan, _ = spearmanr(labels, manhattan_distances)
+    eval_pearson_cosine, _ = pearsonr(labels, cosine_scores)
+    eval_spearman_cosine, _ = spearmanr(labels, cosine_scores)
 
-eval_pearson_euclidean, _ = pearsonr(labels, euclidean_distances)
-eval_spearman_euclidean, _ = spearmanr(labels, euclidean_distances)
+    eval_pearson_manhattan, _ = pearsonr(labels, manhattan_distances)
+    eval_spearman_manhattan, _ = spearmanr(labels, manhattan_distances)
 
-eval_pearson_dot, _ = pearsonr(labels, dot_products)
-eval_spearman_dot, _ = spearmanr(labels, dot_products)
+    eval_pearson_euclidean, _ = pearsonr(labels, euclidean_distances)
+    eval_spearman_euclidean, _ = spearmanr(labels, euclidean_distances)
 
-logger = logging.getLogger(__name__)
-logger.info("Cosine-Similarity :\tPearson: {:.4f}\tSpearman: {:.4f}".format(
-    eval_pearson_cosine, eval_spearman_cosine))
-logger.info("Manhattan-Distance:\tPearson: {:.4f}\tSpearman: {:.4f}".format(
-    eval_pearson_manhattan, eval_spearman_manhattan))
-logger.info("Euclidean-Distance:\tPearson: {:.4f}\tSpearman: {:.4f}".format(
-    eval_pearson_euclidean, eval_spearman_euclidean))
-logger.info("Dot-Product-Similarity:\tPearson: {:.4f}\tSpearman: {:.4f}".format(
-    eval_pearson_dot, eval_spearman_dot))
+    eval_pearson_dot, _ = pearsonr(labels, dot_products)
+    eval_spearman_dot, _ = spearmanr(labels, dot_products)
+
+    logger = logging.getLogger(__name__)
+    logger.info("Cosine-Similarity :\tPearson: {:.4f}\tSpearman: {:.4f}".format(
+        eval_pearson_cosine, eval_spearman_cosine))
+    logger.info("Manhattan-Distance:\tPearson: {:.4f}\tSpearman: {:.4f}".format(
+        eval_pearson_manhattan, eval_spearman_manhattan))
+    logger.info("Euclidean-Distance:\tPearson: {:.4f}\tSpearman: {:.4f}".format(
+        eval_pearson_euclidean, eval_spearman_euclidean))
+    logger.info("Dot-Product-Similarity:\tPearson: {:.4f}\tSpearman: {:.4f}".format(
+        eval_pearson_dot, eval_spearman_dot))
+    return eval_pearson_cosine, eval_spearman_cosine
+
+
+
+pearson_results = []
+spearman_results = []
+
+for model_language in ["de","nl","es","fr","it","pt","pl","ru","zh"]:
+    model_pearson_results = []
+    model_spearman_results = []
+    model_name = f"gowitheflowlab/en-{model_language}"
+    for eval_language in ["en","de","nl","es","fr","it","pt","pl","ru","zh"]:
+        eval_pearson_cosine, eval_spearman_cosine = sts_evaluation(model_name, eval_language)
+        model_pearson_results.append(eval_pearson_cosine)
+        model_spearman_results.append(eval_spearman_cosine)
+    pearson_results.append([model_name].extend(model_pearson_results))
+    spearman_results.append([model_name].extend(model_spearman_results))
+
+with open('multi_language_pearson.pkl', 'wb') as f:
+    pickle.dump(pearson_results, f)
+    
+with open('multi_language_spearman.pkl.pkl', 'wb') as f:
+    pickle.dump(spearman_results, f)
