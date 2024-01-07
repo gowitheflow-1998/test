@@ -63,62 +63,6 @@ check_min_version("4.17.0")
 require_version("datasets>=1.8.0", "To fix: pip install ./datasets")
 
 
-datasets_keys = {
-    "snli": ("rungalileo/snli", "premise", "hypothesis"),
-    "mnli": ("SetFit/mnli", "text1", "text2"),
-    "mteb": ('mteb/stsbenchmark-sts', "sentence1", "sentence2"),
-    "multi-sts": ('stsb_multi_mt', "sentence1", "sentence2")
-}
-
-def image_preprocess_fn(examples):
-
-    # two sentences for contrastive learning
-    if not sentence2_key:
-        raise ValueError(f"two sentences needed, but got one.")
-
-    encodings = [processor(text=format_fn(a)) for a in examples[sentence1_key]]
-    examples["pixel_values1"] = [transforms(Image.fromarray(e.pixel_values)) for e in encodings]
-    examples["attention_mask1"] = [
-        get_attention_mask(e.num_text_patches, seq_length=SEQ_LEN) for e in encodings
-    ]
-
-    encodings = [processor(text=format_fn(a)) for a in examples[sentence2_key]]
-    examples["pixel_values2"] = [transforms(Image.fromarray(e.pixel_values)) for e in encodings]
-    examples["attention_mask2"] = [
-        get_attention_mask(e.num_text_patches, seq_length=SEQ_LEN) for e in encodings
-    ]
-
-    if "label" in examples:
-        examples["label"] = [l if l != -1 else -100 for l in examples["label"]]
-    if "score" in examples:
-        examples["label"] = [l if l != -1 else -100 for l in examples["score"]]
-    if "similarity_score" in examples:
-        examples["label"] = [l if l != -1 else -100 for l in examples["similarity_score"]]
-    return examples
-
-def image_collate_fn(examples):
-
-    # two sentences for contrastive learning
-
-    pixel_values1 = torch.stack([example["pixel_values1"] for example in examples])
-    attention_mask1 = torch.stack([example["attention_mask1"] for example in examples])
-
-    pixel_values2 = torch.stack([example["pixel_values2"] for example in examples])
-    attention_mask2 = torch.stack([example["attention_mask2"] for example in examples])
-
-    if "label" in examples[0]:
-        labels = torch.LongTensor([example["label"] for example in examples])
-    else:
-        labels = None
-
-    return {
-        'pixel_values': labels,  # for ignore warning obly
-        'sentence1': {"pixel_values": pixel_values1, "attention_mask": attention_mask1},
-        'sentence2': {"pixel_values": pixel_values2, "attention_mask": attention_mask2},
-        'labels': labels
-    }
-
-
 def sts_evaluation(model_name, language):
     LANGUAGE = language
     DATASET_NAME = 'multi-sts'
@@ -130,9 +74,13 @@ def sts_evaluation(model_name, language):
     # 
     # model_name = "zxh4546/allnli_wikispan_unsup_ensemble_last"
     # model_name = "2-allnli-**gowitheflow/unsup-ensemble-last-64-768-6**-64-128-3e-5-2600"
-
+    datasets_keys = {
+        "snli": ("rungalileo/snli", "premise", "hypothesis"),
+        "mnli": ("SetFit/mnli", "text1", "text2"),
+        "mteb": ('mteb/stsbenchmark-sts', "sentence1", "sentence2"),
+        "multi-sts": ('stsb_multi_mt', "sentence1", "sentence2")
+    }
     this_dataset_name, sentence1_key, sentence2_key = datasets_keys[DATASET_NAME]
-
     train_dataset = load_dataset(
         this_dataset_name,
         LANGUAGE,
@@ -140,6 +88,54 @@ def sts_evaluation(model_name, language):
         cache_dir=None,
         use_auth_token=None,
     )
+
+    def image_preprocess_fn(examples):
+
+        # two sentences for contrastive learning
+        if not sentence2_key:
+            raise ValueError(f"two sentences needed, but got one.")
+
+        encodings = [processor(text=format_fn(a)) for a in examples[sentence1_key]]
+        examples["pixel_values1"] = [transforms(Image.fromarray(e.pixel_values)) for e in encodings]
+        examples["attention_mask1"] = [
+            get_attention_mask(e.num_text_patches, seq_length=SEQ_LEN) for e in encodings
+        ]
+
+        encodings = [processor(text=format_fn(a)) for a in examples[sentence2_key]]
+        examples["pixel_values2"] = [transforms(Image.fromarray(e.pixel_values)) for e in encodings]
+        examples["attention_mask2"] = [
+            get_attention_mask(e.num_text_patches, seq_length=SEQ_LEN) for e in encodings
+        ]
+
+        if "label" in examples:
+            examples["label"] = [l if l != -1 else -100 for l in examples["label"]]
+        if "score" in examples:
+            examples["label"] = [l if l != -1 else -100 for l in examples["score"]]
+        if "similarity_score" in examples:
+            examples["label"] = [l if l != -1 else -100 for l in examples["similarity_score"]]
+        return examples
+
+    def image_collate_fn(examples):
+
+        # two sentences for contrastive learning
+
+        pixel_values1 = torch.stack([example["pixel_values1"] for example in examples])
+        attention_mask1 = torch.stack([example["attention_mask1"] for example in examples])
+
+        pixel_values2 = torch.stack([example["pixel_values2"] for example in examples])
+        attention_mask2 = torch.stack([example["attention_mask2"] for example in examples])
+
+        if "label" in examples[0]:
+            labels = torch.LongTensor([example["label"] for example in examples])
+        else:
+            labels = None
+
+        return {
+            'pixel_values': labels,  # for ignore warning obly
+            'sentence1': {"pixel_values": pixel_values1, "attention_mask": attention_mask1},
+            'sentence2': {"pixel_values": pixel_values2, "attention_mask": attention_mask2},
+            'labels': labels
+        }
 
     try:
         label_list = train_dataset.features["similarity_score"].names
@@ -269,24 +265,26 @@ def sts_evaluation(model_name, language):
         eval_pearson_dot, eval_spearman_dot))
     return eval_pearson_cosine, eval_spearman_cosine
 
+if __name__ == "__main__":
 
+    pearson_results = []
+    spearman_results = []
 
-pearson_results = []
-spearman_results = []
+    for model_language in ["de","nl","es","fr","it","pt","pl","ru","zh"]:
+    # for model_language in ["de"]:
+        model_pearson_results = []
+        model_spearman_results = []
+        model_name = f"gowitheflowlab/en-{model_language}"
+        for eval_language in ["en","de","nl","es","fr","it","pt","pl","ru","zh"]:
+            eval_pearson_cosine, eval_spearman_cosine = sts_evaluation(model_name, eval_language)
+            model_pearson_results.append(eval_pearson_cosine)
+            model_spearman_results.append(eval_spearman_cosine)
+        model_pearson_results.append(model_language)
+        model_spearman_results.append(model_language)
+        pearson_results.append(model_pearson_results)
+        spearman_results.append(model_spearman_results)
 
-for model_language in ["de","nl","es","fr","it","pt","pl","ru","zh"]:
-    model_pearson_results = []
-    model_spearman_results = []
-    model_name = f"gowitheflowlab/en-{model_language}"
-    for eval_language in ["en","de","nl","es","fr","it","pt","pl","ru","zh"]:
-        eval_pearson_cosine, eval_spearman_cosine = sts_evaluation(model_name, eval_language)
-        model_pearson_results.append(eval_pearson_cosine)
-        model_spearman_results.append(eval_spearman_cosine)
-    pearson_results.append([model_name].extend(model_pearson_results))
-    spearman_results.append([model_name].extend(model_spearman_results))
-
-with open('multi_language_pearson.pkl', 'wb') as f:
-    pickle.dump(pearson_results, f)
-    
-with open('multi_language_spearman.pkl.pkl', 'wb') as f:
-    pickle.dump(spearman_results, f)
+    with open('multi_language_pearson.pkl', 'wb') as f:
+        pickle.dump(pearson_results, f)
+    with open('multi_language_spearman.pkl.pkl', 'wb') as f:
+        pickle.dump(spearman_results, f)
