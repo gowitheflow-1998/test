@@ -1,5 +1,5 @@
 export MODEL="Team-PIXEL/pixel-base"
-export DATASETNAME='para'
+export DATASETNAME='allnli'
 export POOLING_MODE="mean"
 export SEQ_LEN=64
 export FALLBACK_FONTS_DIR="data/fallback_fonts"
@@ -7,8 +7,8 @@ export BSZ=128
 export GRAD_ACCUM=1
 export LR=3e-6
 export SEED=42
-export NUM_STEPS=50500
-export WARM_STEPS=5000
+export NUM_STEPS=2000
+export WARM_STEPS=200
 
 export RUN_NAME="contrastive-${DATASETNAME}-$(basename ${MODEL})-${POOLING_MODE}-${SEQ_LEN}-${BSZ}-${GRAD_ACCUM}-${LR}-${NUM_STEPS}-${SEED}-eval"
 python scripts/training/run_contrastive_training_eval.py \

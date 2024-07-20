@@ -1,16 +1,18 @@
 export MODEL="Team-PIXEL/pixel-base"
-export DATASETNAME='unsup-wr'
+# export DATASETNAME='unsup-wr'
+export DATASETNAME='unsup-simcse'
 export POOLING_MODE="mean"
 export SEQ_LEN=64
 export FALLBACK_FONTS_DIR="data/fallback_fonts"
-export BSZ=768
+export BSZ=128
 export GRAD_ACCUM=1
 export LR=3e-6
 export SEED=42
-export NUM_STEPS=1300
-export WARM_STEPS=100
+export NUM_STEPS=7800
+export WARM_STEPS=780
 
-export RUN_NAME="0-${DATASETNAME}-${SEQ_LEN}-${BSZ}-${LR}-${NUM_STEPS}"
+export RUN_NAME="./model-ablation/simcse-unsup"
+# export RUN_NAME="0-${DATASETNAME}-${SEQ_LEN}-${BSZ}-${LR}-${NUM_STEPS}"
 python scripts/training/run_contrastive_training_eval.py \
   --model_name_or_path=${MODEL} \
   --remove_unused_columns=False \

@@ -1,8 +1,9 @@
 from typing import List, Optional
-
+from torch.nn import CrossEntropyLoss
 import numpy as np
 import torch
 from tqdm import tqdm
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from transformers import Trainer, is_torch_tpu_available
 from transformers.deepspeed import deepspeed_init
@@ -21,6 +22,7 @@ from scipy.stats import pearsonr, spearmanr
 
 from .utils.optimization import get_cosine_schedule_to_min_lr_with_warmup
 from .utils.training import debug_log_inputs
+
 
 if is_torch_tpu_available():
     import torch_xla.core.xla_model as xm
@@ -63,43 +65,106 @@ class PIXELTrainer(Trainer):
 
         return (loss, outputs) if return_outputs else loss
 
-class PIXELTrainerForContrastive(Trainer):
+class CLIPTrainerForContrastiveWithEval(Trainer):
     """
-    Same as a regular Trainer but with the option to visualize inputs before they are fed into the model
-    for debugging purposes
+    Trainer class for contrastive learning with evaluation, specialized for CLIP model with image inputs.
     """
     def compute_loss(self, model, inputs, return_outputs=False):
         """
         How the loss is computed by Trainer. By default, all models return the loss in the first element.
-
-        Subclass and override for custom behavior.
         """
-        if "labels" in inputs:
-            labels = inputs.pop("labels")
+        labels = inputs.pop("labels")
 
-        mask = [model.config.id2label[int(label)].capitalize() == 'Entailment' for label in labels]
+        pixel_values1 = inputs.pop("pixel_values1").to(self.args.device)
+        pixel_values2 = inputs.pop("pixel_values2").to(self.args.device)
 
-        sentence1 = inputs.pop("sentence1")
-        sentence2 = inputs.pop("sentence2")
+        outputs_a = model.get_image_features(pixel_values=pixel_values1)
+        outputs_b = model.get_image_features(pixel_values=pixel_values2)
+        embeddings_a = F.normalize(outputs_a, p=2, dim=1)
+        embeddings_b = F.normalize(outputs_b, p=2, dim=1)
 
-        outputs_a = model(**sentence1)
-        outputs_b = model(**sentence2)
-
-        embeddings_a = outputs_a['logits'][mask]
-        embeddings_b = outputs_b['logits'][mask]
-
-        # after pool
         scores = torch.mm(embeddings_a, embeddings_b.transpose(0, 1)) / 0.05
 
-        labels = torch.tensor(range(len(scores)), dtype=torch.long,
-                              device=embeddings_a.device)  # Example a[i] should match with b[i]
+        # Labels are the indices of the correct matches
+        labels = torch.arange(scores.size(0), device=scores.device)
 
-        loss = (model.loss(scores, labels) + model.loss(scores.transpose(0, 1), labels)) / 2
+        loss_fct = CrossEntropyLoss()
+        loss = (loss_fct(scores, labels) + loss_fct(scores.transpose(0, 1), labels)) / 2
 
         outputs = (outputs_a, outputs_b)
-
         return (loss, outputs) if return_outputs else loss
 
+    def evaluate(self, ignore_keys=None, metric_key_prefix: str = "eval"):
+        logger.info("*** Training Evaluate ***")
+
+        total_output_a = []
+        total_output_b = []
+
+        args = self.args
+        model = self.model.to(args.device)
+
+        model.eval()
+        eval_dataloader = self.get_eval_dataloader(self.eval_dataset)
+        with torch.no_grad():
+            for step, inputs in enumerate(tqdm(eval_dataloader)):
+                pixel_values1 = inputs.pop("pixel_values1").to(args.device)
+                pixel_values2 = inputs.pop("pixel_values2").to(args.device)
+
+                outputs_a = model.get_image_features(pixel_values=pixel_values1)
+                outputs_b = model.get_image_features(pixel_values=pixel_values2)
+
+                total_output_a.append(outputs_a.detach().cpu())
+                total_output_b.append(outputs_b.detach().cpu())
+
+        embeddings1 = torch.cat(total_output_a, dim=0)
+        embeddings2 = torch.cat(total_output_b, dim=0)
+        labels = [n['label'] for n in self.eval_dataset]
+
+        cosine_scores = 1 - paired_cosine_distances(embeddings1, embeddings2)
+        manhattan_distances = -paired_manhattan_distances(embeddings1, embeddings2)
+        euclidean_distances = -paired_euclidean_distances(embeddings1, embeddings2)
+        dot_products = [np.dot(emb1, emb2) for emb1, emb2 in zip(embeddings1, embeddings2)]
+
+        eval_pearson_cosine, _ = pearsonr(labels, cosine_scores)
+        eval_spearman_cosine, _ = spearmanr(labels, cosine_scores)
+
+        eval_pearson_manhattan, _ = pearsonr(labels, manhattan_distances)
+        eval_spearman_manhattan, _ = spearmanr(labels, manhattan_distances)
+
+        eval_pearson_euclidean, _ = pearsonr(labels, euclidean_distances)
+        eval_spearman_euclidean, _ = spearmanr(labels, euclidean_distances)
+
+        eval_pearson_dot, _ = pearsonr(labels, dot_products)
+        eval_spearman_dot, _ = spearmanr(labels, dot_products)
+
+        metrics = {
+            'eval_loss': 0,  # Placeholder to avoid errors
+            'pearson_cosine': eval_pearson_cosine,
+            'spearman_cosine': eval_spearman_cosine,
+            'pearson_manhattan': eval_pearson_manhattan,
+            'spearman_manhattan': eval_spearman_manhattan,
+            'pearson_euclidean': eval_pearson_euclidean,
+            'spearman_euclidean': eval_spearman_euclidean,
+            'pearson_dot': eval_pearson_dot,
+            'spearman_dot': eval_spearman_dot,
+        }
+
+        # Prefix all keys with metric_key_prefix + '_'
+        metrics = {f"{metric_key_prefix}_{k}": v for k, v in metrics.items()}
+
+        logger.info("Cosine-Similarity :\tPearson: {:.4f}\tSpearman: {:.4f}".format(
+            eval_pearson_cosine, eval_spearman_cosine))
+        logger.info("Manhattan-Distance:\tPearson: {:.4f}\tSpearman: {:.4f}".format(
+            eval_pearson_manhattan, eval_spearman_manhattan))
+        logger.info("Euclidean-Distance:\tPearson: {:.4f}\tSpearman: {:.4f}".format(
+            eval_pearson_euclidean, eval_spearman_euclidean))
+        logger.info("Dot-Product-Similarity:\tPearson: {:.4f}\tSpearman: {:.4f}".format(
+            eval_pearson_dot, eval_spearman_dot))
+
+        self.control = self.callback_handler.on_evaluate(self.args, self.state, self.control, metrics)
+        return metrics
+
+    
 class PIXELTrainerForContrastiveWithEval(Trainer):
     """
     Same as a regular Trainer but with the option to visualize inputs before they are fed into the model
@@ -222,6 +287,43 @@ class PIXELTrainerForContrastiveWithEval(Trainer):
         return metrics
 
 
+class PIXELTrainerForContrastive(Trainer):
+    """
+    Same as a regular Trainer but with the option to visualize inputs before they are fed into the model
+    for debugging purposes
+    """
+    def compute_loss(self, model, inputs, return_outputs=False):
+        """
+        How the loss is computed by Trainer. By default, all models return the loss in the first element.
+
+        Subclass and override for custom behavior.
+        """
+        if "labels" in inputs:
+            labels = inputs.pop("labels")
+
+        mask = [model.config.id2label[int(label)].capitalize() == 'Entailment' for label in labels]
+
+        sentence1 = inputs.pop("sentence1")
+        sentence2 = inputs.pop("sentence2")
+
+        outputs_a = model(**sentence1)
+        outputs_b = model(**sentence2)
+
+        embeddings_a = outputs_a['logits'][mask]
+        embeddings_b = outputs_b['logits'][mask]
+
+        # after pool
+        scores = torch.mm(embeddings_a, embeddings_b.transpose(0, 1))/ 0.05
+
+        labels = torch.tensor(range(len(scores)), dtype=torch.long,
+                              device=embeddings_a.device)  # Example a[i] should match with b[i]
+
+        loss = (model.loss(scores, labels) + model.loss(scores.transpose(0, 1), labels)) / 2
+
+        outputs = (outputs_a, outputs_b)
+
+        return (loss, outputs) if return_outputs else loss
+    
 class PIXELTrainerForPretraining(PIXELTrainer):
     """
     PIXELTrainer for pretraining

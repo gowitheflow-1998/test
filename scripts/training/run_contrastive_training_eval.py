@@ -71,13 +71,39 @@ datasets_keys = {
     "stsb": ('SetFit/stsb', "text1", "text2"),
     "mteb": ('mteb/stsbenchmark-sts', "sentence1", "sentence2"),
     "allnli": ("gowitheflow/allnli-sup", "sentence1", "sentence2"),
+    "ir": ("gowitheflowlab/ir", "sentence1", "sentence2"),
+    "allnli-ir": ("gowitheflowlab/allnli-ir", "sentence1", "sentence2"),
+    "allnli-reasoning": ("gowitheflowlab/allnli-reasoning", "sentence1", "sentence2"),
+    "allnli-reasoning-6": ("gowitheflowlab/allnli-reasoning-6", "sentence1", "sentence2"),
+    "allnli-reasoning-7": ("gowitheflowlab/allnli-reasoning-6-tr", "sentence1", "sentence2"),
+    "math":("gowitheflowlab/math-train", "sentence1","sentence2"),
+    "code":("gowitheflowlab/code-train", "sentence1","sentence2"),
     "allnlineg": ("gowitheflow/allnli-withnegs", "sentence1", "sentence2&sentence3"),
+    "unsup-simcse": ("gowitheflow/wiki1M-character-level-all", "sentence1", "sentence1"),
     "unsup-c": ("gowitheflow/wiki1M-character-level-all", "sentence1", "sentence2"),
     "unsup-wr": ("gowitheflow/wiki1M-word-random-shuffle", "sentence1", "sentence2"),
     "unsup-wc": ("gowitheflow/wiki1M-word-condition-shuffle", "sentence1", "sentence2"),
     "unsup-wa": ("gowitheflow/wiki1M-word-character-all-multiple", "sentence1", "sentence2"),
     "para":("sentence-transformers/parallel-sentences", "Membership of Parliament: see Minutes", "Състав на Парламента: вж. протоколи"),
     "wikispan":("gowitheflow/wiki-span", "sentence1", "sentence2"),
+    "en-de": ("gowitheflowlab/nli-sts-en-de", "sentence1", "sentence2"),
+    "en-es": ("gowitheflowlab/nli-sts-en-es", "sentence1", "sentence2"),
+    "en-fr": ("gowitheflowlab/nli-sts-en-fr", "sentence1", "sentence2"),
+    "en-it": ("gowitheflowlab/nli-sts-en-it", "sentence1", "sentence2"),
+    "en-nl": ("gowitheflowlab/nli-sts-en-nl", "sentence1", "sentence2"),
+    "en-pl": ("gowitheflowlab/nli-sts-en-pl", "sentence1", "sentence2"),
+    "en-pt": ("gowitheflowlab/nli-sts-en-pt", "sentence1", "sentence2"),
+    "en-ru": ("gowitheflowlab/nli-sts-en-ru", "sentence1", "sentence2"),
+    "en-zh": ("gowitheflowlab/nli-sts-en-zh", "sentence1", "sentence2"),
+    "xnli-pooled":("gowitheflowlab/multi-pooled", "sentence1","sentence2"),
+    "xnli-random":("gowitheflowlab/allnli-en-xnli-multi-random","sentence1","sentence2"),
+    "parallel-pt-nl-pl":("gowitheflowlab/parallel-pt-nl-pl","sentence1","sentence2"),
+    "parallel-9":("gowitheflowlab/parallel-9","sentence1","sentence2"),
+    "parallel-all":("gowitheflowlab/parallel-all","sentence1","sentence2"),
+    "parallel-small":("gowitheflowlab/parallel-small","English","Other Language"),
+    "parallel-medium":("gowitheflowlab/parallel-medium","English","Other Language"),
+    "parallel-small-nli":("gowitheflowlab/parallel-small-w-nli","English","Other Language"),
+    "parallel-medium-nli":("gowitheflowlab/parallel-medium-w-nli","English","Other Language")
 }
 
 
@@ -569,7 +595,7 @@ def main():
     model.config.label2id = label_to_id
     model.config.id2label = {id: label for label, id in config.label2id.items()}
 
-    if "unsup" not in data_args.dataset_name and 'neg' not in data_args.dataset_name and 'span' not in data_args.dataset_name:
+    if "parallel" not in data_args.dataset_name and "xnli" not in data_args.dataset_name and "unsup" not in data_args.dataset_name and 'neg' not in data_args.dataset_name and 'span' not in data_args.dataset_name:
         logger.info("Select positive samples only.")
         train_dataset = train_dataset.filter(condition)
 

@@ -1,68 +1,43 @@
-from torch.utils.data import DataLoader
-import math
-from sentence_transformers import models, losses
-from sentence_transformers import LoggingHandler, SentenceTransformer, util, InputExample
-from sentence_transformers.evaluation import EmbeddingSimilarityEvaluator
 import logging
-from datetime import datetime
-import os
-import gzip
-import csv
 from sklearn.metrics.pairwise import paired_cosine_distances, paired_euclidean_distances, paired_manhattan_distances
+from sklearn.metrics.pairwise import cosine_similarity
 from scipy.stats import pearsonr, spearmanr
-import argparse
-import copy
 import logging
-import os
-import random
-import sys
-from dataclasses import dataclass, field
-from typing import Optional, Tuple, Union
 from tqdm import tqdm
-import pickle
-
 import numpy as np
 import torch
-import transformers
-from torch.utils.data import DataLoader
 from datasets import load_dataset, load_metric
 from PIL import Image
 from pixel import (
     AutoConfig,
-    AutoModelForSequenceClassification,
     Modality,
     PangoCairoTextRenderer,
     PIXELForSequenceClassification,
-    PIXELTrainerForContrastive,
-    PIXELTrainingArguments,
+    PIXELForRepresentation,
     PoolingMode,
-    PyGameTextRenderer,
     get_attention_mask,
     get_transforms,
     glue_strip_spaces,
-    log_sequence_classification_predictions,
-    resize_model_embeddings,
+    resize_model_embeddings
 )
-from transformers import (
-    AutoTokenizer,
-    DataCollatorWithPadding,
-    EarlyStoppingCallback,
-    EvalPrediction,
-    HfArgumentParser,
-    PreTrainedTokenizerFast,
-    set_seed,
-)
-from transformers.trainer_utils import get_last_checkpoint
+
 from transformers.utils import check_min_version
 from transformers.utils.versions import require_version
 
 import datasets
-
+import random 
 check_min_version("4.17.0")
 
 require_version("datasets>=1.8.0", "To fix: pip install ./datasets")
-
-
+torch.backends.cudnn.benchmark = False
+torch.backends.cudnn.deterministic = True
+SEED = 42
+torch.manual_seed(SEED)
+np.random.seed(SEED)
+random.seed(SEED)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(SEED)
+    
 def sts_evaluation(model_name, language):
     LANGUAGE = language
     DATASET_NAME = 'multi-sts'
@@ -125,10 +100,11 @@ def sts_evaluation(model_name, language):
         pixel_values2 = torch.stack([example["pixel_values2"] for example in examples])
         attention_mask2 = torch.stack([example["attention_mask2"] for example in examples])
 
-        if "label" in examples[0]:
-            labels = torch.LongTensor([example["label"] for example in examples])
-        else:
-            labels = None
+        # if "label" in examples[0]:
+        #     labels = torch.LongTensor([example["label"] for example in examples])
+        # else:
+        #     labels = None
+        labels = None
 
         return {
             'pixel_values': labels,  # for ignore warning obly
@@ -170,17 +146,28 @@ def sts_evaluation(model_name, language):
 
     print(f'model type: {config.model_type}')
 
-    model = PIXELForSequenceClassification.from_pretrained(
-        model_name,
-        config=config,
-        pooling_mode=PoolingMode.from_string(POOLING_MODE),
-        add_layer_norm=True,
-        **config_kwargs,
-    )
+    if ("pixel" in model_name) or ("Pixel" in model_name):
+        print("rep")
+        model = PIXELForRepresentation.from_pretrained(
+            model_name,
+            config=config,
+            pooling_mode=PoolingMode.from_string(POOLING_MODE),
+            add_layer_norm=True,
+            **config_kwargs,
+        )
+
+    else:  
+        model = PIXELForSequenceClassification.from_pretrained(
+            model_name,
+            config=config,
+            pooling_mode=PoolingMode.from_string(POOLING_MODE),
+            add_layer_norm=True,
+            **config_kwargs,
+        )
 
     model.config.label2id = label_to_id
     model.config.id2label = {id: label for label, id in config.label2id.items()}
-
+    
     modality = Modality.IMAGE
     renderer_cls = PangoCairoTextRenderer
     processor = renderer_cls.from_pretrained(
@@ -234,7 +221,7 @@ def sts_evaluation(model_name, language):
     embeddings1  = torch.cat(total_output_a, dim=0)
     embeddings2 = torch.cat(total_output_b, dim=0)
     # labels = [n['similarity_score'] for n in train_dataset]
-
+    # norms = torch.norm(embeddings1, p=2, dim=1)  # Compute L2 norm for each embedding
     labels = [n['label'] for n in train_dataset]
 
     cosine_scores = 1 - (paired_cosine_distances(embeddings1, embeddings2))
@@ -253,7 +240,9 @@ def sts_evaluation(model_name, language):
 
     eval_pearson_dot, _ = pearsonr(labels, dot_products)
     eval_spearman_dot, _ = spearmanr(labels, dot_products)
-
+    cos = cosine_similarity(embeddings1, embeddings1)
+    ani = round((np.sum(cos) - len(cos))/(len(cos) * (len(cos)-1)),3)
+    
     logger = logging.getLogger(__name__)
     logger.info("Cosine-Similarity :\tPearson: {:.4f}\tSpearman: {:.4f}".format(
         eval_pearson_cosine, eval_spearman_cosine))
@@ -263,31 +252,58 @@ def sts_evaluation(model_name, language):
         eval_pearson_euclidean, eval_spearman_euclidean))
     logger.info("Dot-Product-Similarity:\tPearson: {:.4f}\tSpearman: {:.4f}".format(
         eval_pearson_dot, eval_spearman_dot))
-    return eval_pearson_cosine, eval_spearman_cosine
+    return eval_pearson_cosine, eval_spearman_cosine, ani
 
 if __name__ == "__main__":
+    model_pearson_results = []
+    model_spearman_results = []
+    anisotropy = []
+    model_name = "AnonymousPage/checkpoint-all"
+    # model_name = "./model-ablation/full-en-de/checkpoint-2600"
+    # model_name = "./model-ablation/vanilla-en-de/checkpoint-2600"
+    # model_name = "./model/0-unsup-ensemble-wikispan-best-allnli-normed"
+    # model_name = "./model/0-allnli-normed"
+    # model_name = "0-allnli-parallel-9-allnli-parallel-9-allnli-parallel-9-allnli/checkpoint-2600"
+    # model_name ="./model/00-allnli-p9-allnli-p9-allnli-p9-allnli-old-best"#"gowitheflowlab/3-allnli-p-a-p-a-p-a-64-128-3e-5"
+    # model_name ="./model/00-allnli-p9-allnli-p9-allnli-p9-allnli-old-best/checkpoint-2600"
+    # model_name = "Pixel-Linguist/Pixel-Linguist-v0"
+    # model_name = "./model/pixel-linguist-v0-final/checkpoint-2600"
+    # model_name = "./model/00-allnli-p9-allnli-p9-allnli-p9-allnli-old-best/checkpoint-2600"
+    # model_name = "model/parallel-medium-iter-3/checkpoint-205000"
+    # model_name = "./0-0-unsup-pixel_aug-64-128-3e-6-2600-all/checkpoint-2600-allnli/checkpoint-2600"#"Team-PIXEL/pixel-base"#
+    # for eval_language in ["en","de","nl","es","fr","it","pt","pl","ru","zh"]:
+    for eval_language in ["en","de","nl","es","fr","it","pt","pl","ru","zh"]:
+        eval_pearson_cosine, eval_spearman_cosine, ani = sts_evaluation(model_name, eval_language)
+        model_pearson_results.append(eval_pearson_cosine)
+        model_spearman_results.append(eval_spearman_cosine)
+        anisotropy.append(ani)
+    # print(model_pearson_results)
+    print("spearman all languages:", model_spearman_results)
+    print("anisotropy all languages:",anisotropy)
+    # print(np.mean(model_pearson_results[1:]))
+    print("mean spearman except English:",np.mean(model_spearman_results[1:]))
+    print("mean anisotropy except English:",np.mean(anisotropy[1:]))
+    # pearson_results = []
+    # spearman_results = []
 
-    pearson_results = []
-    spearman_results = []
+    # for model_language in ["en","de","nl","es","fr","it","pt","pl","ru","zh"]:
+    # # for model_language in ["de"]:
+    #     model_pearson_results = []
+    #     model_spearman_results = []
+    #     if model_language == "en":
+    #         model_name = "zxh4546/allnli_wikispan_unsup_ensemble_last"
+    #     else:
+    #         model_name = f"gowitheflowlab/en-{model_language}"
+    #     for eval_language in ["en","de","nl","es","fr","it","pt","pl","ru","zh"]:
+    #         eval_pearson_cosine, eval_spearman_cosine = sts_evaluation(model_name, eval_language)
+    #         model_pearson_results.append(eval_pearson_cosine)
+    #         model_spearman_results.append(eval_spearman_cosine)
+    #     model_pearson_results.append(model_language)
+    #     model_spearman_results.append(model_language)
+    #     pearson_results.append(model_pearson_results)
+    #     spearman_results.append(model_spearman_results)
 
-    for model_language in ["en","de","nl","es","fr","it","pt","pl","ru","zh"]:
-    # for model_language in ["de"]:
-        model_pearson_results = []
-        model_spearman_results = []
-        if model_language == "en":
-            model_name = "zxh4546/allnli_wikispan_unsup_ensemble_last"
-        else:
-            model_name = f"gowitheflowlab/en-{model_language}"
-        for eval_language in ["en","de","nl","es","fr","it","pt","pl","ru","zh"]:
-            eval_pearson_cosine, eval_spearman_cosine = sts_evaluation(model_name, eval_language)
-            model_pearson_results.append(eval_pearson_cosine)
-            model_spearman_results.append(eval_spearman_cosine)
-        model_pearson_results.append(model_language)
-        model_spearman_results.append(model_language)
-        pearson_results.append(model_pearson_results)
-        spearman_results.append(model_spearman_results)
-
-    with open('multi_language_pearson.pkl', 'wb') as f:
-        pickle.dump(pearson_results, f)
-    with open('multi_language_spearman.pkl.pkl', 'wb') as f:
-        pickle.dump(spearman_results, f)
+    # with open('multi_language_pearson.pkl', 'wb') as f:
+    #     pickle.dump(pearson_results, f)
+    # with open('multi_language_spearman.pkl.pkl', 'wb') as f:
+    #     pickle.dump(spearman_results, f)

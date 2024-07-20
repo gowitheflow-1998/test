@@ -15,7 +15,7 @@ import torch
 import wandb
 from torch import Tensor, nn
 from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
-from transformers import ViTForImageClassification, PreTrainedModel
+from transformers import ViTForImageClassification, PreTrainedModel, CLIPModel, CLIPConfig
 from transformers.activations import ACT2FN
 from transformers.file_utils import ModelOutput
 from transformers.modeling_outputs import (
@@ -28,9 +28,10 @@ from transformers.modeling_utils import find_pruneable_heads_and_indices, prune_
 
 from ...utils import DependencyParsingModelOutput, format_mask
 from ..biaffine import Biaffine
-from ..pooling import PoolingForSequenceClassificationHead, PoolingMode
+from ..pooling import PoolingForSequenceClassificationHead, PoolingMode, PoolingPure
 from ..vit import ViTModel
 from .configuration_pixel import PIXELConfig
+from torch.nn.functional import normalize
 
 logger = logging.getLogger(__name__)
 
@@ -313,6 +314,7 @@ class PIXELForSequenceClassification(ViTForImageClassification):
 
         logits = self.pooler(sequence_output, attention_mask)
         logits = self.classifier(logits)
+        logits = normalize(logits, p=2, dim=1)
 
         loss = None
         if labels is not None:
@@ -347,7 +349,182 @@ class PIXELForSequenceClassification(ViTForImageClassification):
             attentions=outputs.attentions,
         )
 
+class PIXELForRepresentation(ViTForImageClassification):
+    def __init__(self, config, pooling_mode: PoolingMode = PoolingMode.MEAN, add_layer_norm: bool = True):
+        super().__init__(config)
 
+        if not hasattr(self.config, "interpolate_pos_encoding"):
+            self.config.interpolate_pos_encoding = False
+        self.num_labels = config.num_labels
+        self.add_cls_pooling_layer = pooling_mode == PoolingMode.CLS
+        self.vit = ViTModel(config, add_pooling_layer=self.add_cls_pooling_layer)
+        self.loss = nn.CrossEntropyLoss()
+        self.pooler = PoolingPure(
+            hidden_size=config.hidden_size,
+            pooling_mode=pooling_mode,
+        )
+        self.post_init()
+
+    def forward(
+        self,
+        pixel_values=None,
+        attention_mask=None,
+        head_mask=None,
+        labels=None,
+        output_attentions=None,
+        output_hidden_states=None,
+        interpolate_pos_encoding=None,
+        return_dict=None,
+    ):
+        r"""
+        labels (`torch.LongTensor` of shape `(batch_size,)`, *optional*):
+            Labels for computing the image classification/regression loss. Indices should be in `[0, ...,
+            config.num_labels - 1]`. If `config.num_labels == 1` a regression loss is computed (Mean-Square loss), If
+            `config.num_labels > 1` a classification loss is computed (Cross-Entropy).
+        """
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+        outputs = self.vit(
+            pixel_values,
+            attention_mask=attention_mask,
+            head_mask=head_mask,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            interpolate_pos_encoding=interpolate_pos_encoding
+            if interpolate_pos_encoding is not None
+            else self.config.interpolate_pos_encoding,
+            return_dict=return_dict,
+        )
+
+        if self.add_cls_pooling_layer:
+            sequence_output = outputs[1]
+        else:
+            sequence_output = outputs[0][:, 1:, :]
+
+        logits = self.pooler(sequence_output, attention_mask)
+        logits = normalize(logits, p=2, dim=1)
+        loss = None
+        if labels is not None:
+            if self.config.problem_type is None:
+                if self.num_labels == 1:
+                    self.config.problem_type = "regression"
+                elif self.num_labels > 1 and (labels.dtype == torch.long or labels.dtype == torch.int):
+                    self.config.problem_type = "single_label_classification"
+                else:
+                    self.config.problem_type = "multi_label_classification"
+
+            if self.config.problem_type == "regression":
+                loss_fct = MSELoss()
+                if self.num_labels == 1:
+                    loss = loss_fct(logits.squeeze(), labels.squeeze())
+                else:
+                    loss = loss_fct(logits, labels)
+            elif self.config.problem_type == "single_label_classification":
+                loss_fct = CrossEntropyLoss()
+                loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
+            elif self.config.problem_type == "multi_label_classification":
+                loss_fct = BCEWithLogitsLoss()
+                loss = loss_fct(logits, labels)
+        if not return_dict:
+            output = (logits,) + outputs[2:]
+            return ((loss,) + output) if loss is not None else output
+
+        return SequenceClassifierOutput(
+            loss=loss,
+            logits=logits,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
+        )
+
+class CLIPForRepresentation(PreTrainedModel):
+    config_class = CLIPConfig
+    base_model_prefix = "clip"
+
+    def __init__(self, config, pooling_mode: PoolingMode = PoolingMode.MEAN, add_layer_norm: bool = True):
+        super().__init__(config)
+        self.num_labels = config.num_labels
+        self.pooling_mode = pooling_mode
+        self.add_layer_norm = add_layer_norm
+
+        self.clip_model = CLIPModel(config).vision_model
+
+        self.pooler = PoolingPure(
+            hidden_size=config.hidden_size,
+            pooling_mode=pooling_mode,
+        )
+        self.loss = CrossEntropyLoss()
+
+    def forward(
+        self,
+        pixel_values=None,
+        attention_mask=None,
+        head_mask=None,
+        labels=None,
+        output_attentions=None,
+        output_hidden_states=None,
+        interpolate_pos_encoding=None,
+        return_dict=None,
+    ):
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+        outputs = self.clip_model(
+            pixel_values=pixel_values,
+            attention_mask=attention_mask,
+            head_mask=head_mask,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+
+        sequence_output = outputs.last_hidden_state
+
+        logits = self.pooler(sequence_output, attention_mask)
+        logits = normalize(logits, p=2, dim=1)
+
+        loss = None
+        if labels is not None:
+            if self.config.problem_type is None:
+                if self.num_labels == 1:
+                    self.config.problem_type = "regression"
+                elif self.num_labels > 1 and (labels.dtype == torch.long or labels.dtype == torch.int):
+                    self.config.problem_type = "single_label_classification"
+                else:
+                    self.config.problem_type = "multi_label_classification"
+
+            if self.config.problem_type == "regression":
+                loss_fct = MSELoss()
+                if self.num_labels == 1:
+                    loss = loss_fct(logits.squeeze(), labels.squeeze())
+                else:
+                    loss = loss_fct(logits, labels)
+            elif self.config.problem_type == "single_label_classification":
+                loss_fct = CrossEntropyLoss()
+                loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
+            elif self.config.problem_type == "multi_label_classification":
+                loss_fct = BCEWithLogitsLoss()
+                loss = loss_fct(logits, labels)
+
+        if not return_dict:
+            output = (logits,) + outputs[2:]
+            return ((loss,) + output) if loss is not None else output
+
+        return SequenceClassifierOutput(
+            loss=loss,
+            logits=logits,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
+        )
+
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
+        config = kwargs.pop("config", None)
+        if config is None:
+            config = CLIPConfig.from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
+        model = cls(config, *model_args, **kwargs)
+        clip_model = CLIPModel.from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
+        model.clip_model = clip_model.vision_model
+        return model
+    
 class PIXELForQuestionAnswering(ViTForImageClassification):
 
     _keys_to_ignore_on_load_unexpected = [r"pooler"]

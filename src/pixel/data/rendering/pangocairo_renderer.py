@@ -1178,3 +1178,68 @@ class PangoCairoTextRenderer(TextRenderingMixin):
         scaled_font_size = (self.dpi / 72) * self.font_size
         font_str = f"{font_family_name} {scaled_font_size}px"
         self.font = Pango.font_description_from_string(font_str)
+
+    def get_text_width(self, text: str) -> int:
+        """
+        Measure the width of the given text using the configured Pango Layout.
+
+        Args:
+            text (str): The text to measure.
+
+        Returns:
+            int: The width of the text in pixels.
+        """
+        # Create a dummy Cairo surface and context for measurement
+        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 529*16, 16)
+        context = cairo.Context(surface)
+
+        # Create a Pango layout with the Cairo context
+        layout = PangoCairo.create_layout(context)
+
+        # Set the font description and text color from the renderer's settings
+        layout.set_font_description(self.font)
+        rgb = self.hex_to_rgb(self.font_color)
+        context.set_source_rgb(*rgb)  # Convert color to RGB tuple
+        layout.set_text(text, -1)
+
+        # Get the width of the text
+        ink_rect, logical_rect = layout.get_pixel_extents()
+        width = logical_rect.width
+
+        return width
+
+    def hex_to_rgb(self, color: str) -> Tuple[float, float, float]:
+        """
+        Convert a hex color or a named color to a tuple of RGB components.
+
+        Args:
+            color (str): The hex color string or named color.
+
+        Returns:
+            Tuple[float, float, float]: The RGB components in the range [0, 1].
+        """
+        # Map of common named colors to their hex equivalents
+        color_map = {
+            "black": "#000000",
+            "white": "#FFFFFF",
+            "red": "#FF0000",
+            "green": "#008000",
+            "blue": "#0000FF",
+            # Additional colors can be added here
+        }
+
+        # Check if the input is a named color and convert it to hex
+        if color.lower() in color_map:
+            color = color_map[color.lower()]
+        elif not color.startswith('#'):
+            raise ValueError("Provided color is neither a known named color nor a hex code.")
+
+        # Strip the '#' if present and handle short and long hex codes
+        color = color.lstrip('#')
+        if len(color) == 3:
+            color = ''.join([x*2 for x in color])
+        elif len(color) != 6:
+            raise ValueError("Hex color must be either 3 or 6 characters long.")
+
+        # Convert hex to RGB tuple
+        return tuple(int(color[i:i + 2], 16) / 255.0 for i in range(0, 6, 2))

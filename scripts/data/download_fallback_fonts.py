@@ -63,7 +63,8 @@ def main():
     logger.setLevel(logging.INFO)
 
     # Create output directory
-    output_dir = sys.argv[1]
+    # output_dir = sys.argv[1]
+    output_dir = "testing"
     os.makedirs(output_dir, exist_ok=True)
 
     logger.info(f"Downloading fonts to {output_dir}")

@@ -299,3 +299,48 @@ class PoolingForSequenceClassificationHead(nn.Module):
 
             hidden_states = self.dropout(hidden_states)
             return self.pooling(hidden_states=hidden_states, attention_mask=attention_mask)
+        
+class PoolingPure(nn.Module):
+    """
+    Layer that takes hidden states from an encoder, e.g. BERT or PIXEL, applies some basic transformations and finally
+    pools the hidden states into a fixed-size output vector that serves as input to a sequence classifier.
+
+    :param hidden_size: Hidden size of the contextualized token/patch embeddings
+    :param hidden_dropout_prob: Dropout probability
+    :param add_layer_norm: Whether or not layer normalization is applied
+    """
+
+    def __init__(
+        self,
+        hidden_size: int,
+        # hidden_dropout_prob: float = 0.0,
+        # add_layer_norm: bool = True,
+        pooling_mode: PoolingMode = PoolingMode.MEAN,
+    ):
+        super().__init__()
+
+        # self.add_layer_norm = add_layer_norm
+        self.pooling_mode = pooling_mode
+
+        # self.linear = nn.Linear(hidden_size, hidden_size)
+        # self.activation = nn.GELU()
+        # self.ln = nn.LayerNorm(hidden_size, eps=1e-12)
+        # self.dropout = nn.Dropout(hidden_dropout_prob)
+
+        if pooling_mode == PoolingMode.MEAN:
+            self.pooling = Pooling(hidden_size)
+        elif pooling_mode == PoolingMode.MAX:
+            self.pooling = Pooling(hidden_size, pooling_mode_mean_tokens=False, pooling_mode_max_tokens=True)
+        elif pooling_mode == PoolingMode.CLS:
+            pass
+        elif pooling_mode == PoolingMode.PMA:
+            self.pooling = Pooling(hidden_size, pooling_mode_mean_tokens=False, pooling_mode=pooling_mode.mode)
+        else:
+            raise ValueError(f"Pooling mode {pooling_mode} not supported.")
+
+    def forward(self, hidden_states: torch.Tensor, attention_mask: torch.Tensor):
+
+        if self.pooling_mode == PoolingMode.CLS:
+            return hidden_states
+        else:
+            return self.pooling(hidden_states=hidden_states, attention_mask=attention_mask)

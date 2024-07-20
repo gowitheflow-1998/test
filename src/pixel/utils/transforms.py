@@ -2,11 +2,13 @@ import math
 import numbers
 import warnings
 from typing import List, Optional, Tuple, Union
+import random
 
 import torch
 import torchvision.transforms.functional as F
 from torch import Tensor
 from torchvision.transforms import Compose, InterpolationMode, Lambda, Normalize, Resize, ToTensor
+from torchvision.transforms import RandomHorizontalFlip, RandomVerticalFlip, RandomResizedCrop, GaussianBlur
 from torchvision.utils import _log_api_usage_once
 from transformers.image_utils import IMAGENET_STANDARD_MEAN, IMAGENET_STANDARD_STD
 from transformers.utils import logging
@@ -165,6 +167,9 @@ def get_transforms(
     do_squarify: bool = False,
     do_normalize: bool = False,
     do_random_erase: bool = False,
+    do_vision_aug: bool = False,
+    do_random_choise = False,
+    vis_aug_choise = 0,  # 0,1,2,3
     image_mean: Optional[float] = IMAGENET_STANDARD_MEAN,
     image_std: Optional[float] = IMAGENET_STANDARD_STD,
     random_erase_params: Optional[Tuple[float, int, Tuple[float, float], Tuple[float, float]]] = (
@@ -245,5 +250,16 @@ def get_transforms(
     if do_normalize:
         logger.info(f"Applying normalization with mean={image_mean}, std={image_std}")
         transforms.append(Normalize(mean=image_mean, std=image_std))
+
+    if do_vision_aug:
+        T = [RandomResizedCrop(size=size, interpolation=InterpolationMode.BICUBIC),
+             RandomHorizontalFlip(p=1),
+             RandomVerticalFlip(p=1),
+             GaussianBlur(5)]
+        if do_random_choise:
+            T = random.choice(T)
+        else:
+            T = T[vis_aug_choise]
+        transforms.append(T)
 
     return Compose(transforms)
