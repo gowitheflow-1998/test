@@ -59,6 +59,8 @@ from transformers.utils import check_min_version
 from transformers.utils.versions import require_version
 
 import datasets
+import warnings
+import re
 
 check_min_version("4.17.0")
 
@@ -108,6 +110,7 @@ datasets_keys = {
 
 
 logger = logging.getLogger(__name__)
+logging.getLogger("transformers.modeling_utils").setLevel(logging.ERROR)
 
 def get_sentence_keys(example):
     for name, val in datasets_keys.items():
@@ -349,7 +352,7 @@ def get_collator(training_args: argparse.Namespace, processor: CLIPProcessor,mod
             'pixel_values2': pixel_values2,
             'labels': labels
         }
-
+ 
     return image_collate_fn
 
 def transform_to_square(rendered_text, 
@@ -637,33 +640,6 @@ def main():
 
         trainer.log_metrics("eval", metrics)
         trainer.save_metrics("eval", metrics)
-
-    if training_args.do_predict:
-        logger.info("*** Predict ***")
-
-        outputs = trainer.predict(predict_dataset, metric_key_prefix="test")
-        metrics = outputs.metrics
-
-        trainer.log_metrics("test", metrics)
-        trainer.save_metrics("test", metrics)
-
-        # Log predictions to understand where model goes wrong
-        if training_args.log_predictions:
-            log_sequence_classification_predictions(
-                training_args=training_args,
-                features=predict_dataset,
-                examples=predict_examples,
-                predictions=outputs.predictions,
-                sentence1_key=sentence1_key,
-                sentence2_key=sentence2_key,
-                modality=modality,
-                prefix="test",
-            )
-
-        max_test_samples = (
-            data_args.max_predict_samples if data_args.max_predict_samples is not None else len(predict_dataset)
-        )
-        metrics["test_samples"] = min(max_test_samples, len(predict_dataset))
 
     kwargs = {"finetuned_from": model_args.model_name_or_path, "tasks": "text-classification"}
     if data_args.dataset_name is not None:

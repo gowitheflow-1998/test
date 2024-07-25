@@ -81,6 +81,8 @@ datasets_keys = {
     "unsup-wa": ("gowitheflow/wiki1M-word-character-all-multiple", "sentence1", "sentence2"),
     "para":("sentence-transformers/parallel-sentences", "Membership of Parliament: see Minutes", "Състав на Парламента: вж. протоколи"),
     "wikispan":("gowitheflow/wiki-span", "sentence1", "sentence2"),
+    "msmarco":("bclavie/msmarco-10m-triplets", "query", "positive"),
+    "compression":("sentence-transformers/sentence-compression", "text","simplified"),
     "en-de": ("gowitheflowlab/nli-sts-en-de", "sentence1", "sentence2"),
     "en-es": ("gowitheflowlab/nli-sts-en-es", "sentence1", "sentence2"),
     "en-fr": ("gowitheflowlab/nli-sts-en-fr", "sentence1", "sentence2"),
@@ -526,7 +528,7 @@ def main():
     model.config.label2id = label_to_id
     model.config.id2label = {id: label for label, id in config.label2id.items()}
 
-    if "parallel" not in data_args.dataset_name and "xnli" not in data_args.dataset_name and "unsup" not in data_args.dataset_name and 'neg' not in data_args.dataset_name and 'span' not in data_args.dataset_name:
+    if "compression" not in data_args.dataset_name and "msmarco" not in data_args.dataset_name and "parallel" not in data_args.dataset_name and "xnli" not in data_args.dataset_name and "unsup" not in data_args.dataset_name and 'neg' not in data_args.dataset_name and 'span' not in data_args.dataset_name:
         logger.info("Select positive samples only.")
         train_dataset = train_dataset.filter(condition)
 

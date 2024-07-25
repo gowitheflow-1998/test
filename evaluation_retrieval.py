@@ -122,7 +122,8 @@ class PixelForRetrieval:
 # model_paths = ["model/0-unsup-ensemble-allnli-normed",
 #                "model/0-unsup-ensemble-wikispan-allnli-normed"]
 # model_paths = ["model/0-allnli-normed"]
-model_paths = ["./model-ablation/allnli-reasoning-7-pixel/checkpoint-3800"]
+# model_paths = ["./model-ablation/allnli-reasoning-7-pixel/checkpoint-3800"]
+model_paths = [""]
 # dataset = "arguana"#"nq"
 for model_path in model_paths:
     # dataset = "hotpotqa"
