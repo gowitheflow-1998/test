@@ -1,18 +1,19 @@
-export MODEL="openai/clip-vit-base-patch16"
+# export MODEL="openai/clip-vit-base-patch16"
+export MODEL="model-ablation/clip-parallel-all-1024-allnli-1024/checkpoint-310"
 # export MODEL="./clip-parallel-all-last"  #"./clip-vit-base-patch16"
 # export MODEL="./clip-parallel-all-last"
-export RENDERER_PATH="Team-PIXEL/pixel-base"
-export DATASETNAME='allnli' #"parallel-all" #'allnli' #"unsup-c"
+export RENDERER_PATH="model-ablation/clip-parallel-all-1024-allnli-1024/checkpoint-310" #"Team-PIXEL/pixel-base"
+export DATASETNAME="parallel-all" #'compression' #"parallel-all" #'allnli' #"unsup-c"
 export POOLING_MODE="mean"
 export SEQ_LEN=196
 export FALLBACK_FONTS_DIR="data/fallback_fonts"
-export BSZ=64
+export BSZ=1024
 export GRAD_ACCUM=1
 export LR=3e-5
 export SEED=42
-export NUM_STEPS=5000 #1200 #64000
-export WARM_STEPS=500 #120 #3000
-export RUN_NAME="./model-ablation/gradcache-test2"
+export NUM_STEPS=4000 #1200 #64000
+export WARM_STEPS=400 #120 #3000
+export RUN_NAME="./model-ablation/clip-parallel-all-1024-allnli-1024-parallel-all-1024"
 python scripts/training/run_contrastive_training_eval_clip_gradcache.py \
   --model_name_or_path=${MODEL} \
   --processor_name=${RENDERER_PATH} \
@@ -36,11 +37,11 @@ python scripts/training/run_contrastive_training_eval_clip_gradcache.py \
   --output_dir=${RUN_NAME} \
   --overwrite_cache \
   --logging_strategy=steps \
-  --logging_steps=100 \
+  --logging_steps=200 \
   --evaluation_strategy=steps \
-  --eval_steps=100 \
+  --eval_steps=200 \
   --save_strategy=steps \
-  --save_steps=100 \
+  --save_steps=200 \
   --save_total_limit=3 \
   --load_best_model_at_end=True \
   --seed=${SEED} \
