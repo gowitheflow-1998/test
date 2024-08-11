@@ -296,7 +296,14 @@ class CachedMultipleNegativesRankingLoss(nn.Module):
             loss_mbatch: torch.Tensor = self.cross_entropy_loss(scores, labels[b:e]) * len(scores) / batch_size
             loss_mbatch.backward()
             losses.append(loss_mbatch.detach())
-
+            # scores_ab: Tensor = self.similarity_fct(embeddings_a[b:e], embeddings_b) * self.scale
+            # scores_ba: Tensor = self.similarity_fct(embeddings_b[b:e], embeddings_a) * self.scale
+            # loss_ab: torch.Tensor = self.cross_entropy_loss(scores_ab, labels[b:e]) * len(scores_ab) / batch_size
+            # loss_ba: torch.Tensor = self.cross_entropy_loss(scores_ba, labels[b:e]) * len(scores_ba) / batch_size
+            # loss_mbatch = (loss_ab + loss_ba) / 2
+            # loss_mbatch.backward()
+            # losses.append(loss_mbatch.detach())
+            
         loss = sum(losses).requires_grad_()
 
         self.cache = [[r.grad for r in rs] for rs in reps]  # e.g. 3 * bsz/mbsz * (mbsz, hdim)
@@ -324,7 +331,13 @@ class CachedMultipleNegativesRankingLoss(nn.Module):
             scores: Tensor = self.similarity_fct(embeddings_a[b:e], embeddings_b) * self.scale
             loss_mbatch: torch.Tensor = self.cross_entropy_loss(scores, labels[b:e]) * len(scores) / batch_size
             losses.append(loss_mbatch)
-
+            # scores_ab: Tensor = self.similarity_fct(embeddings_a[b:e], embeddings_b) * self.scale
+            # scores_ba: Tensor = self.similarity_fct(embeddings_b[b:e], embeddings_a) * self.scale
+            # loss_ab: torch.Tensor = self.cross_entropy_loss(scores_ab, labels[b:e]) * len(scores_ab) / batch_size
+            # loss_ba: torch.Tensor = self.cross_entropy_loss(scores_ba, labels[b:e]) * len(scores_ba) / batch_size
+            # loss_mbatch = (loss_ab + loss_ba) / 2
+            # losses.append(loss_mbatch)
+            
         loss = sum(losses)
         return loss
 

@@ -1,20 +1,3 @@
-#!/usr/bin/env python
-# coding=utf-8
-# Copyright 2020 The HuggingFace Inc. team. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-""" Finetuning the library models for sequence classification on NLI datasets."""
-
 import argparse
 import copy
 import logging
@@ -22,47 +5,30 @@ import os
 import random
 import sys
 from dataclasses import dataclass, field
-from typing import Optional, Tuple, Union
+from typing import Optional, Tuple
 
 import numpy as np
 import torch
 import transformers
-from datasets import load_dataset, load_metric
-from PIL import Image
+from datasets import load_dataset
 from pixel import (
-    AutoConfig,
-    Modality,
     PangoCairoTextRenderer,
     CLIPTrainerForContrastiveWithEvalGradCache,
     PIXELTrainingArguments,
-    PoolingMode,
     PyGameTextRenderer,
     glue_strip_spaces,
-    log_sequence_classification_predictions,
 )
+
 from transformers import CLIPProcessor, AutoModel
 from transformers import (
-    AutoTokenizer,
-    EvalPrediction,
     HfArgumentParser,
     set_seed,
 )
 from transformers.trainer_utils import get_last_checkpoint
-from transformers.utils import check_min_version
-from transformers.utils.versions import require_version
 
 import datasets
-import warnings
-import re
-
-check_min_version("4.17.0")
-
-require_version("datasets>=1.8.0", "To fix: pip install ./datasets")
-
 
 datasets_keys = {
-    "snli": ("rungalileo/snli", "premise", "hypothesis"),   # currently not support anymore, use 'allnli' instead
-    "mnli": ("SetFit/mnli", "text1", "text2"),              # currently not support anymore, use 'allnli' instead
     "stsb": ('SetFit/stsb', "text1", "text2"),
     "mteb": ('mteb/stsbenchmark-sts', "sentence1", "sentence2"),
     "allnli": ("gowitheflow/allnli-sup", "sentence1", "sentence2"),
@@ -100,33 +66,31 @@ datasets_keys = {
     "parallel-small":("gowitheflowlab/parallel-small","English","Other Language"),
     "parallel-medium":("gowitheflowlab/parallel-medium","English","Other Language"),
     "parallel-small-nli":("gowitheflowlab/parallel-small-w-nli","English","Other Language"),
-    "parallel-medium-nli":("gowitheflowlab/parallel-medium-w-nli","English","Other Language")
+    "parallel-medium-nli":("gowitheflowlab/parallel-medium-w-nli","English","Other Language"),
+    "supervised-multilingual":("gowitheflow/supervised-multilingual","sentence1","sentence2")
 }
 
 
 logger = logging.getLogger(__name__)
 logging.getLogger("transformers.modeling_utils").setLevel(logging.ERROR)
 
-def get_sentence_keys(example):
-    for name, val in datasets_keys.items():
-        this_dataset_name, sentence1_key, sentence2_key = val
-        if sentence1_key in example and sentence2_key in example:
-            return sentence1_key, sentence2_key
-        else:
-            continue
-
-def select_datasets(_dataset, id2label, do_select=False):
-    key = 'id' if 'id' in _dataset[0] else 'idx'
-    if do_select:
-        logger.info("Select positive samples only.")
-        _dataset = _dataset.select(
-            data[key] for data in _dataset if id2label[int(data['label'])].capitalize() == 'Entailment'
-        )
-    return _dataset
-
 def condition(example):
     return example['label'].capitalize() == 'Entailment'
 
+def get_column_names(dataset_name: str) -> Tuple[str, str, Optional[str]]:
+    dataset_info = datasets_keys[dataset_name]
+    sentence1_key, sentence2_key = dataset_info[1], dataset_info[2]
+    if '&' in sentence2_key:
+        sentence2_key, sentence3_key = sentence2_key.split('&')
+    else:
+        sentence3_key = None
+    return sentence1_key, sentence2_key, sentence3_key
+
+def filter_dataset(train_dataset):
+    if "label" in train_dataset.column_names:
+        logger.info("Select positive samples only.")
+        train_dataset = train_dataset.filter(condition)
+    return train_dataset
 
 @dataclass
 class DataTrainingArguments:
@@ -178,34 +142,6 @@ class DataTrainingArguments:
             "value if set."
         },
     )
-    max_predict_samples: Optional[int] = field(
-        default=None,
-        metadata={
-            "help": "For debugging purposes or quicker training, truncate the number of prediction examples to this "
-            "value if set."
-        },
-    )
-    train_file: Optional[str] = field(
-        default=None, metadata={"help": "A csv or a json file containing the training data."}
-    )
-    validation_file: Optional[str] = field(
-        default=None, metadata={"help": "A csv or a json file containing the validation data."}
-    )
-    test_file: Optional[str] = field(default=None, metadata={"help": "A csv or a json file containing the test data."})
-
-    def __post_init__(self):
-        if self.dataset_name is not None:
-            pass
-        elif self.train_file is None or self.validation_file is None:
-            raise ValueError("Need either a NLI task, a training/validation file or a dataset name.")
-        # else:
-        #     train_extension = self.train_file.split(".")[-1]
-        #     assert train_extension in ["csv", "json"], "`train_file` should be a csv or a json file."
-        #     validation_extension = self.validation_file.split(".")[-1]
-        #     assert (
-        #         validation_extension == train_extension
-        #     ), "`validation_file` should have the same extension (csv or json) as `train_file`."
-
 
 @dataclass
 class ModelArguments:
@@ -257,81 +193,28 @@ class ModelArguments:
             "with private models)."
         },
     )
-    pooling_mode: str = field(
-        default="mean",
-        metadata={
-            "help": f"Pooling mode to use in classification head (options are {[e.value for e in PoolingMode]}."
-        },
-    )
-    pooler_add_layer_norm: bool = field(
-        default=True,
-        metadata={
-            "help": "Whether to add layer normalization to the classification head pooler. Note that this flag is"
-            "ignored and no layer norm is added when using CLS pooling mode."
-        },
-    )
-    dropout_prob: float = field(
-        default=0.1, metadata={"help": "Dropout probability for attention blocks and classification head"}
-    )
 
     def __post_init__(self):
-        self.pooling_mode = PoolingMode.from_string(self.pooling_mode)
-
         if not self.rendering_backend.lower() in ["pygame", "pangocairo"]:
             raise ValueError("Invalid rendering backend. Supported backends are 'pygame' and 'pangocairo'.")
         else:
             self.rendering_backend = self.rendering_backend.lower()
 
 
-def get_processor(model_args: argparse.Namespace, modality: Modality):
-    if modality == Modality.TEXT:
-        processor = AutoTokenizer.from_pretrained(
-            model_args.processor_name if model_args.processor_name else model_args.model_name_or_path,
-            use_fast=True,
-            add_prefix_space=True if model_args.model_name_or_path == "roberta-base" else False,
-            cache_dir=model_args.cache_dir,
-            revision=model_args.model_revision,
-            use_auth_token=model_args.use_auth_token if model_args.use_auth_token else None,
+def get_processor(model_args: argparse.Namespace):
+
+    renderer_cls = PyGameTextRenderer if model_args.rendering_backend == "pygame" else PangoCairoTextRenderer
+    processor = renderer_cls.from_pretrained(
+        model_args.processor_name if model_args.processor_name else model_args.model_name_or_path,
+        cache_dir=model_args.cache_dir,
+        revision=model_args.model_revision,
+        use_auth_token=model_args.use_auth_token if model_args.use_auth_token else None,
+        fallback_fonts_dir=model_args.fallback_fonts_dir,
+        rgb=model_args.render_rgb,
         )
-    elif modality == Modality.IMAGE:
-        renderer_cls = PyGameTextRenderer if model_args.rendering_backend == "pygame" else PangoCairoTextRenderer
-        processor = renderer_cls.from_pretrained(
-            model_args.processor_name if model_args.processor_name else model_args.model_name_or_path,
-            cache_dir=model_args.cache_dir,
-            revision=model_args.model_revision,
-            use_auth_token=model_args.use_auth_token if model_args.use_auth_token else None,
-            fallback_fonts_dir=model_args.fallback_fonts_dir,
-            rgb=model_args.render_rgb,
-        )
-    else:
-        raise ValueError("Modality not supported.")
     return processor
 
-
-def get_model_and_config(model_args: argparse.Namespace, num_labels: int, dataset_name: str):
-    config_kwargs = {
-        "cache_dir": model_args.cache_dir,
-        "revision": model_args.model_revision,
-        "use_auth_token": model_args.use_auth_token if model_args.use_auth_token else None,
-    }
-
-    config = AutoConfig.from_pretrained(
-        model_args.config_name if model_args.config_name else model_args.model_name_or_path,
-        num_labels=num_labels,
-        finetuning_task=dataset_name,
-        attention_probs_dropout_prob=model_args.dropout_prob,
-        hidden_dropout_prob=model_args.dropout_prob,
-        **config_kwargs,
-    )
-
-    logger.info(f"Using dropout with probability {model_args.dropout_prob}")
-
-    model = AutoModel.from_pretrained(model_args.model_name_or_path).to("cuda:0")
-
-    return model, config
-
-
-def get_collator(training_args: argparse.Namespace, processor: CLIPProcessor,modality):
+def get_collator():
     def image_collate_fn(examples):
         pixel_values1 = torch.stack([example["pixel_values1"] for example in examples])
         pixel_values2 = torch.stack([example["pixel_values2"] for example in examples])
@@ -365,7 +248,6 @@ def transform_to_square(rendered_text,
     return final_image_rgb
 
 def get_preprocess_fn(
-    data_args: argparse.Namespace,
     processor: PangoCairoTextRenderer,
     clip_processor: CLIPProcessor,
     sentence_keys: Tuple[str, Optional[str]],
@@ -408,15 +290,10 @@ def get_preprocess_fn(
             processed_examples["label"] = [l if l != -1 else -100 for l in examples["label"]]
         if "score" in examples:
             processed_examples["label"] = [l if l != -1 else -100 for l in examples["score"]]
-        # if "label" in examples:
-        #     processed_examples["label"] = [1 if l != -1 else -100 for l in examples["label"]]
-        #     processed_examples["label"] = torch.tensor(processed_examples["label"], dtype=torch.long)
-        # if "score" in examples:
-        #     processed_examples["label"] = [1 if l != -1 else -100 for l in examples["score"]]
-        #     processed_examples["label"] = torch.tensor(processed_examples["label"], dtype=torch.long)
         return processed_examples
 
     return image_preprocess_fn
+
 
 def main():
     parser = HfArgumentParser((ModelArguments, DataTrainingArguments, PIXELTrainingArguments))
@@ -466,101 +343,58 @@ def main():
     # Set seed before initializing model.
     set_seed(training_args.seed)
 
-    train_dataset_name, sentence1_key, sentence2_key = datasets_keys[data_args.dataset_name]
-    val_dataset_name, val_sentence1_key, val_sentence2_key = datasets_keys[data_args.dataset_name_val]
+    train_dataset_name = datasets_keys[data_args.dataset_name][0]
+    val_dataset_name = datasets_keys[data_args.dataset_name_val][0]
+    sentence1_key, sentence2_key, sentence3_key = get_column_names(data_args.dataset_name)
+    val_sentence1_key, val_sentence2_key, val_sentence3_key = get_column_names(data_args.dataset_name_val)
 
     if training_args.do_train:
-        if data_args.train_file:
-            # Settings fixed mainly for our robustness experiments
-            train_dataset = load_dataset(
-                train_dataset_name,
-                data_files=data_args.train_file,
-                delimiter="\t",
-                split="train",
-                cache_dir=model_args.cache_dir,
-                use_auth_token=True if model_args.use_auth_token else None,
-            )
-            train_dataset = train_dataset.class_encode_column("label")
-        else:
-            train_dataset = load_dataset(
-                train_dataset_name,
-                data_args.dataset_config_name,
-                split="train",
-                cache_dir=model_args.cache_dir,
-                use_auth_token=True if model_args.use_auth_token else None,
-            )
-        try:
-            label_list = train_dataset.features["label"].names
-        except (AttributeError, KeyError):
-            label_list = None
+
+        train_dataset = load_dataset(
+            train_dataset_name,
+            data_args.dataset_config_name,
+            split="train",
+            cache_dir=model_args.cache_dir,
+            use_auth_token=True if model_args.use_auth_token else None,
+        )
 
     if training_args.do_eval:
-        if data_args.validation_file:
-            # Settings fixed mainly for our robustness experiments
-            eval_dataset = load_dataset(
-                val_dataset_name,
-                data_files=data_args.validation_file,
-                delimiter="\t",
-                split="test",
-                cache_dir=model_args.cache_dir,
-                use_auth_token=True if model_args.use_auth_token else None,
-            )
-            eval_dataset = eval_dataset.class_encode_column("label")
-        else:
-            eval_dataset = load_dataset(
-                val_dataset_name,
-                data_args.dataset_config_name,
-                split="test",
-                cache_dir=model_args.cache_dir,
-                use_auth_token=True if model_args.use_auth_token else None,
-            )
 
-    # Labels
-    num_labels = 0  # len(label_list) no need
-    if label_list:
-        label_to_id = {v: i for i, v in enumerate(label_list)}
-    else:
-        label_to_id = {'Entailment': 0, 'Neutral': 1, 'Contradiction': 2}
+        eval_dataset = load_dataset(
+            val_dataset_name,
+            data_args.dataset_config_name,
+            split="test",
+            cache_dir=model_args.cache_dir,
+            use_auth_token=True if model_args.use_auth_token else None,
+        )
 
-    # Load pretrained model and config
-    model, config = get_model_and_config(model_args, num_labels, data_args.dataset_name)
+    model = AutoModel.from_pretrained(model_args.model_name_or_path).to(training_args.device)
 
-    model.config.label2id = label_to_id
-    model.config.id2label = {id: label for label, id in config.label2id.items()}
+    train_dataset = filter_dataset(train_dataset)
+    processor = get_processor(model_args)
 
-    if "compression" not in data_args.dataset_name and "msmarco" not in data_args.dataset_name and "parallel" not in data_args.dataset_name and "xnli" not in data_args.dataset_name and "unsup" not in data_args.dataset_name and 'neg' not in data_args.dataset_name and 'span' not in data_args.dataset_name:
-        logger.info("Select positive samples only.")
-        train_dataset = train_dataset.filter(condition)
-
-    modality = Modality.TEXT if config.model_type in ["bert", "roberta"] else Modality.IMAGE
-    processor = get_processor(model_args, modality)
-
-    if modality == Modality.IMAGE:
-        if processor.max_seq_length != data_args.max_seq_length:
-            processor.max_seq_length = data_args.max_seq_length
+    if processor.max_seq_length != data_args.max_seq_length:
+        processor.max_seq_length = data_args.max_seq_length
 
         # resize_model_embeddings(model, processor.max_seq_length)
     clip_processor = CLIPProcessor.from_pretrained(model_args.model_name_or_path)
     
-    preprocess_fn = get_preprocess_fn(data_args, processor,clip_processor,(sentence1_key, sentence2_key))
-    preprocess_fn_eval = get_preprocess_fn(data_args, processor, clip_processor,(val_sentence1_key, val_sentence2_key))
+    preprocess_fn = get_preprocess_fn(processor,clip_processor,(sentence1_key, sentence2_key))
+    preprocess_fn_eval = get_preprocess_fn(processor, clip_processor,(val_sentence1_key, val_sentence2_key))
 
     if training_args.do_train:
         if data_args.max_train_samples is not None:
             train_dataset = train_dataset.select(range(data_args.max_train_samples))
-        if modality == Modality.IMAGE:
-            train_dataset.features["pixel_values"] = datasets.Image()
+        train_dataset.features["pixel_values"] = datasets.Image()
         train_dataset.set_transform(preprocess_fn)
 
     if training_args.do_eval:
         if data_args.max_eval_samples is not None:
             eval_dataset = eval_dataset.select(range(data_args.max_eval_samples))
-        if modality == Modality.IMAGE:
-            eval_dataset.features["pixel_values"] = datasets.Image()
+        eval_dataset.features["pixel_values"] = datasets.Image()
         eval_examples = copy.deepcopy(eval_dataset)
         eval_dataset.set_transform(preprocess_fn_eval)
 
-    # Log a few random samples from the training set:
     if training_args.do_train:
         for index in random.sample(range(len(train_dataset)), 3):
             logger.info(f"Sample {index} of the training set: {train_dataset[index]}.")
@@ -568,31 +402,17 @@ def main():
     if training_args.do_eval:
         for index in random.sample(range(len(eval_dataset)), 3):
             logger.info(f"Sample {index} of the eval set: {eval_dataset[index]}.")
-
-    # Get the metric function
-    metric = load_metric("xnli")
-
-    def compute_metrics(p: EvalPrediction):
-        preds = p.predictions[0] if isinstance(p.predictions, tuple) else p.predictions
-        preds = np.argmax(preds, axis=1)
-        return metric.compute(predictions=preds, references=p.label_ids)
-
-    # Initialize our Trainer
+            
+        
     trainer = CLIPTrainerForContrastiveWithEvalGradCache(
         model=model,
         args=training_args,
         train_dataset=train_dataset if training_args.do_train else None,
         eval_dataset=eval_dataset if training_args.do_eval else None,
         tokenizer=processor,
-        data_collator=get_collator(training_args, processor, modality),
-        # train_batch_size=training_args.per_device_train_batch_size, 
-        # compute_metrics=compute_metrics,
-        # callbacks=[EarlyStoppingCallback(early_stopping_patience=training_args.early_stopping_patience)]
-        # if training_args.early_stopping
-        # else None,
+        data_collator=get_collator(),
     )
 
-    # Training
     if training_args.do_train:
         checkpoint = None
         if training_args.resume_from_checkpoint is not None:
@@ -612,31 +432,6 @@ def main():
         trainer.save_metrics("train", metrics)
         trainer.save_state()
 
-    # Evaluation
-    if training_args.do_eval and False:
-        logger.info("*** Evaluate ***")
-
-        outputs = trainer.predict(test_dataset=eval_dataset, metric_key_prefix="eval")
-        metrics = outputs.metrics
-
-        if training_args.log_predictions:
-            log_sequence_classification_predictions(
-                training_args=training_args,
-                features=eval_dataset,
-                examples=eval_examples,
-                predictions=outputs.predictions,
-                sentence1_key=sentence1_key,
-                sentence2_key=sentence2_key,
-                modality=modality,
-                prefix="eval",
-            )
-
-        max_eval_samples = data_args.max_eval_samples if data_args.max_eval_samples is not None else len(eval_dataset)
-        metrics["eval_samples"] = min(max_eval_samples, len(eval_dataset))
-
-        trainer.log_metrics("eval", metrics)
-        trainer.save_metrics("eval", metrics)
-
     kwargs = {"finetuned_from": model_args.model_name_or_path, "tasks": "text-classification"}
     if data_args.dataset_name is not None:
         kwargs["language"] = data_args.dataset_config_name
@@ -644,16 +439,7 @@ def main():
         kwargs["dataset_args"] = data_args.dataset_name
         kwargs["dataset"] = f"{data_args.dataset_name.upper()}"
 
-    if training_args.push_to_hub:
-        trainer.push_to_hub(**kwargs)
-    else:
-        trainer.create_model_card(**kwargs)
-
-
-def _mp_fn(index):
-    # For xla_spawn (TPUs)
-    main()
-
+    trainer.create_model_card(**kwargs)
 
 if __name__ == "__main__":
     main()
